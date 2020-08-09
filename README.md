@@ -1,94 +1,139 @@
-# Borg Docker Image
+# BorgBackup2  Docker Image
 
-[![](https://images.microbadger.com/badges/version/pschiffe/borg.svg)](https://microbadger.com/images/pschiffe/borg "Get your own version badge on microbadger.com") [![](https://images.microbadger.com/badges/image/pschiffe/borg.svg)](https://microbadger.com/images/pschiffe/borg "Get your own image badge on microbadger.com") [![Docker Pulls](https://img.shields.io/docker/pulls/pschiffe/borg.svg)](https://hub.docker.com/r/pschiffe/borg/)
+[![](https://images.microbadger.com/badges/image/causalityloop/borgbackup2.svg)](https://microbadger.com/images/causalityloop/borgbackup2 "Get your own image badge on microbadger.com") [![](https://images.microbadger.com/badges/version/causalityloop/borgbackup2.svg)](https://microbadger.com/images/causalityloop/borgbackup2 "Get your own version badge on microbadger.com")
+
+First and foremost, this is an evolution of the original effort done by [pschiffe](https://github.com/pschiffe/docker-borg) and addresses a number of bug fixes, optimizations, and additions to the original project.
+
+What is BorgBackup? In short, it is an easy to use, secure, data backup program with dedupe capabilities ([Official summary](https://borgbackup.readthedocs.io/en/stable/index.html#what-is-borgbackup))
+
+How does this improve the experience?
+
+This docker image provides:
+- lightweight isolated environment to run in
+- notifications
+- sshfs support
+- easy way to backup docker volumes
+- backup and prune in one go
 
 Docker image with [BorgBackup](https://borgbackup.readthedocs.io/en/stable/) client utility and sshfs support. Borg is a deduplicating backup program supporting compresion and encryption. It's very efficient and doesn't need regular full backups while still supporting data pruning.
 
 ## Quick start
+In our example below, we are going to be backing up our [Plex](https://support.plex.tv/articles/200288286-what-is-plex/) metadata.
 
-First, pull the image to keep it up to date. Then create and run the borg backup container. In this quick start, the `/etc` and `/home` directories from the host are bind mounted to the container as read only. These are the directories which will be backed up. The backed up data will be stored in the `borg-repo` Docker volume, and the data will be protected with the `my-secret-pw` password. If the host is using SELinux, the `--security-opt label:disable` flag must be used, because we don't want to relabel the `/etc` and `/home` directories while we want the container to have access to them. After the backup is done, data will be pruned according to the default policy and checked for errors. Borg is running in a verbose mode within the container, so the detailed output from backup will be printed. At the end, the container is deleted. This is done by separate `docker rm` command, because the `--rm` option to the `docker run` would remove also the Docker volumes, and we don't want that. Deleting the container and pulling the image from registry every time keeps the container fresh every time the backup is run.
+ - Pull the image to ensure you have the latest
+ - Set `ARCHIVE_PREFIX` to what you like. `ARCHIVE_PREFIX` is used in the naming of the snapshot we are creating and also used to name the running container
+ - Set the path to your Plex metadata - `/dockers/plex/config`. The container expects an internal data path of `/borg_data/` so just add your path to the end, such as `/borg_data/plex/config`. Also, keep :ro as that defines we are bind mounting as read only. We do not need write access.
+ - Set the path where your backup will be stored - `/raid/plex.backup`
+ - PRUNE=1 indicates to run a cleanup after creating the backup. Remove or change this to 0 to disable pruning. KEEP_[DAILY, WEEKLY, MONTHLY] can all be tweaked to fit your needs and are defined [here](https://borgbackup.readthedocs.io/en/stable/usage/prune.html)
+ - If the host is using SELinux, the `--security-opt label:disable` flag must be used, because we don't want to relabel the data directories
 ```
-docker pull pschiffe/borg
+ARCHIVE_PREFIX='plex'
+docker pull causalityloop/borgbackup2:1.0
 docker run \
-  -e BORG_REPO=/borg/repo \
-  -e BORG_PASSPHRASE=my-secret-pw \
-  -e BACKUP_DIRS=/borg/data \
-  -e EXCLUDE='*/.cache*;*.tmp;/borg/data/etc/shadow' \
+  --rm \
+  -e ARCHIVE=${ARCHIVE_PREFIX}_$(date +%Y-%m-%d_%H.%M.%S) \
+  -e EXCLUDE='*/.cache*;*.tmp' \
   -e COMPRESSION=lz4 \
   -e PRUNE=1 \
+  -e KEEP_DAILY=3 \
+  -e KEEP_WEEKLY=2 \
+  -e KEEP_MONTHLY=1 \
   -v borg-config:/root/.config/borg \
   -v borg-cache:/root/.cache/borg \
-  -v borg-repo:/borg/repo \
-  -v /etc:/borg/data/etc:ro \
-  -v /home:/borg/data/home:ro \
+  -v /raid/plex.backup:/borg_repo \
+  -v /dockers/plex/config:/borg_data/plex/config:ro \
   --security-opt label:disable \
-  --name borg-backup \
-  pschiffe/borg
-docker rm borg-backup
+  --name borg-backup2-${ARCHIVE_PREFIX} \
+  causalityloop/borgbackup2:1.0
 ```
 
 ## More examples
 
+Perform the same backup above and send the log as a notification to a Rocketchat server
+
+ - On the rocketchat server, you can also use [this](https://github.com/causalityloop/borgbackup2/blob/master/rocketchat.script) script to help integrate
+```
+ARCHIVE_PREFIX='plex'
+docker pull causalityloop/borgbackup2:1.0
+docker run \
+  --rm \
+  -e ARCHIVE=${ARCHIVE_PREFIX}_$(date +%Y-%m-%d_%H.%M.%S) \
+  -e EXCLUDE='*/.cache*;*.tmp' \
+  -e COMPRESSION=lz4 \
+  -e PRUNE=1 \
+  -e KEEP_DAILY=3 \
+  -e KEEP_WEEKLY=2 \
+  -e KEEP_MONTHLY=1 \
+  -e NOTIFICATION_HOOK_URL='https://<rocketchat_url>/hooks/<api_key>' \
+  -v borg-config:/root/.config/borg \
+  -v borg-cache:/root/.cache/borg \
+  -v /raid/plex.backup:/borg_repo \
+  -v /dockers/plex/config:/borg_data/plex/config:ro \
+  --security-opt label:disable \
+  --name borg-backup2-${ARCHIVE_PREFIX} \
+  causalityloop/borgbackup2
+```
 Backup docker volumes to remote location (Borg must be running in server mode in that remote location):
 ```
+ARCHIVE_PREFIX='wordpress'
 docker run \
   -e BORG_REPO='user@hostname:/path/to/repo' \
-  -e ARCHIVE=wordpress-$(date +%Y-%m-%d) \
+  -e ARCHIVE=${ARCHIVE_PREFIX}_$(date +%Y-%m-%d_%H.%M.%S) \
   -e BORG_PASSPHRASE=my-secret-pw \
-  -e BACKUP_DIRS=/borg/data \
   -e COMPRESSION=lz4 \
   -e PRUNE=1 \
   -v borg-config:/root/.config/borg \
   -v borg-cache:/root/.cache/borg \
-  -v mariadb-data:/borg/data/mariadb:ro \
-  -v worpdress-data:/borg/data/wordpress:ro \
-  --name borg-backup \
-  pschiffe/borg
+  -v mariadb-data:/borg_data/mariadb:ro \
+  -v wordpress-data:/borg_data/wordpress:ro \
+  --name borg-backup2-${ARCHIVE_PREFIX} \
+  causalityloop/borgbackup2
 ```
 
 Using sshfs (in case when the Borg is not installed on the remote location):
 ```
+ARCHIVE_PREFIX='wordpress'
 docker run \
   -e SSHFS='user@hostname:/path/to/repo' \
   -e SSHFS_PASSWORD=my-ssh-password \
   -e BORG_PASSPHRASE=my-secret-pw \
-  -e BACKUP_DIRS=/borg/data \
   -e COMPRESSION=lz4 \
   -e PRUNE=1 \
   -v borg-config:/root/.config/borg \
   -v borg-cache:/root/.cache/borg \
-  -v mariadb-data:/borg/data/mariadb:ro \
-  -v worpdress-data:/borg/data/wordpress:ro \
+  -v mariadb-data:/borg_data/mariadb:ro \
+  -v wordpress-data:/borg_data/wordpress:ro \
   --cap-add SYS_ADMIN --device /dev/fuse --security-opt label:disable \
-  --name borg-backup \
-  pschiffe/borg
+  --name borg-backup2-${ARCHIVE_PREFIX} \
+  causalityloop/borgbackup2
 ```
 
-Using sshfs with ssh key authentification:
+Using sshfs with ssh key authentication:
 ```
+ARCHIVE_PREFIX='wordpress'
 docker run \
   -e SSHFS='user@hostname:/path/to/repo' \
   -e SSHFS_IDENTITY_FILE=/root/ssh-key/key \
   -e SSHFS_GEN_IDENTITY_FILE=1 \
   -e BORG_PASSPHRASE=my-secret-pw \
-  -e BACKUP_DIRS=/borg/data \
   -e COMPRESSION=lz4 \
   -e PRUNE=1 \
   -v borg-config:/root/.config/borg \
   -v borg-cache:/root/.cache/borg \
   -v borg-ssh-key:/root/ssh-key \
-  -v mariadb-data:/borg/data/mariadb:ro \
-  -v worpdress-data:/borg/data/wordpress:ro \
+  -v mariadb-data:/borg_data/mariadb:ro \
+  -v wordpress-data:/borg_data/wordpress:ro \
   --cap-add SYS_ADMIN --device /dev/fuse --security-opt label:disable \
-  --name borg-backup \
-  pschiffe/borg
+  --name borg-backup2-${ARCHIVE_PREFIX} \
+  causalityloop/borgbackup2
 ```
 
 Restoring files from specific day to folder on host:
 ```
+ARCHIVE_PREFIX='wordpress'
 docker run \
   -e BORG_REPO='user@hostname:/path/to/repo' \
-  -e ARCHIVE=wordpress-2016-05-25 \
+  -e ARCHIVE="${ARCHIVE_PREFIX}-2016-05-25" \
   -e BORG_PASSPHRASE=my-secret-pw \
   -e EXTRACT_TO=/borg/restore \
   -e EXTRACT_WHAT=only/this/file \
@@ -96,20 +141,29 @@ docker run \
   -v borg-cache:/root/.cache/borg \
   -v /opt/restore:/borg/restore \
   --security-opt label:disable \
-  --name borg-backup \
-  pschiffe/borg
+  --name borg-backup-${ARCHIVE_PREFIX} \
+  causalityloop/borgbackup2
 ```
 
-Running custom borg command:
+Running custom borg command to show snapshots:
 ```
 docker run \
-  -e BORG_REPO='user@hostname:/path/to/repo' \
-  -e BORG_PASSPHRASE=my-secret-pw \
-  -e BORG_PARAMS='list ::2016-05-26' \
+  -e BORG_PARAMS='list' \
   -v borg-config:/root/.config/borg \
   -v borg-cache:/root/.cache/borg \
   --name borg-backup \
-  pschiffe/borg
+  causalityloop/borgbackup2
+```
+
+Another custom command to delete all snapshots in a repo. As before, `/borg_repo` is the fixed location, within the container, where borg expects the repo. Also, `BORG_DELETE_I_KNOW_WHAT_I_AM_DOING` allows us to disable the prompt to allow for use in automation:
+```
+docker run \
+  -e BORG_PARAMS='delete /borg_repo' \
+  -e BORG_DELETE_I_KNOW_WHAT_I_AM_DOING='YES' \
+  -v borg-config:/root/.config/borg \
+  -v borg-cache:/root/.cache/borg \
+  --name borg-backup \
+  causalityloop/borgbackup2
 ```
 
 ## Environment variables
@@ -118,15 +172,11 @@ Description of all accepted environment variables follows.
 
 ### Core variables
 
-**BORG_REPO** - repository location
-
 **ARCHIVE** - archive parameter for Borg repository. If empty, defaults to `"${HOSTNAME}_$(date +%Y-%m-%d)"`. For more info see [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage.html)
-
-**BACKUP_DIRS** - directories to back up
 
 **EXCLUDE** - paths/patterns to exclude from backup. Paths must be separated by `;`. For example: `-e EXCLUDE='/my path/one;/path two;*.tmp'`
 
-**BORG_PARAMS** - run custom borg command inside of the container. If this variable is set, default commands are not executed, only the one specified in *BORG_PARAMS*. For example `list` or `list ::2016-05-26`. In both examples, repo is not specified, because borg understands the `BORG_REPO` env var and uses it by default
+**BORG_PARAMS** - run custom borg command inside of the container. ie execute `borg <value_of_BORG_PARAMS>` and exit
 
 **BORG_SKIP_CHECK** - set to `1` if you want to skip the `borg check` command at the end of the backup
 
@@ -156,6 +206,10 @@ Description of all accepted environment variables follows.
 
 **KEEP_MONTHLY** - keep specified number of monthly backups. Defaults to 6
 
+### Notifications
+
+**NOTIFICATION_HOOK_URL** - url and api key to send notifications to (rocketchat). This is in the format of `https://<rocketchat_url>/hooks/<api_key>`
+
 ### SSHFS
 
 **SSHFS** - sshfs destination in form of `user@host:/path`. When using sshfs, container needs special permissions: `--cap-add SYS_ADMIN --device /dev/fuse` and if using SELinux: `--security-opt label:disable` or apparmor: `--security-opt apparmor:unconfined`
@@ -165,3 +219,4 @@ Description of all accepted environment variables follows.
 **SSHFS_IDENTITY_FILE** - path to ssh key
 
 **SSHFS_GEN_IDENTITY_FILE** - if set, generates ssh key pair if *SSHFS_IDENTITY_FILE* is set, but the key file doesn't exist. 4096 bits long rsa key will be generated. After generating the key, the public part of the key is printed to stdout and the container stops, so you have the chance to configure the server part before running first backup
+
